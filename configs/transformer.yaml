@@ -1,0 +1,33 @@
+nombre: transformer_sim
+semilla_split: 0          # fija: todos los modelos se comparan sobre las mismas grabaciones
+mlflow: true
+
+datos:
+  fuente: simulado        # simulado | csv (datos reales, pendiente)
+  simulado:
+    n_por_clase: 30
+    duracion_s: 5.0
+    fs_vib: 5120.0
+    fs_aux: 10.0
+    semilla: 0
+
+ventana:
+  largo: 1024             # 0.2 s a 5120 Hz (múltiplo del parche)
+  salto: 512              # 50 % de traslape
+
+modelo:
+  tipo: transformer
+  params:
+    d: 64
+    parche: 32
+    capas: 2
+    cabezas: 4
+    ff: 128
+    dropout: 0.1
+
+entrenamiento:
+  epocas: 30
+  batch: 64
+  lr: 0.001
+  weight_decay: 0.01
+  paciencia: 6

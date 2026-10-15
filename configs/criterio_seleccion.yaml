@@ -1,0 +1,5 @@
+# CRITERIO DE SELECCIÓN — definido ANTES de ver resultados (oct 2026).
+# No modificar después de correr los experimentos; si se cambia, documentar por qué en la tesis.
+accuracy_minima: 0.95        # meta del anteproyecto (sobre el modelo INT8, que es el que se despliega)
+latencia_maxima_ms: 50       # meta del anteproyecto (medida final en la Raspberry Pi)
+desempate: kb_int8           # si ambos cumplen, gana el más liviano (kb_int8 | lat_int8_ms)

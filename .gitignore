@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/raw/
+data/processed/
+runs/
+mlruns/
+*.onnx
+*.npz
+*.pt
+.ipynb_checkpoints/
+mlflow.db
+mlartifacts/

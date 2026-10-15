@@ -1,0 +1,9 @@
+# Entrenamiento (PC)
+torch>=2.3
+numpy
+scikit-learn
+pyyaml
+onnx
+onnxruntime
+mlflow
+# Raspberry Pi: solo numpy + onnxruntime (ver edge/benchmark_edge.py)
