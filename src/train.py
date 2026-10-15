@@ -38,11 +38,11 @@ def fijar_semilla(s: int):
 
 
 @torch.no_grad()
-def evaluar(modelo, loader):
+def evaluar(modelo, loader, disp="cpu"):
     modelo.eval()
     ys, ps = [], []
     for v, a, y in loader:
-        ps.append(modelo(v, a).argmax(1))
+        ps.append(modelo(v.to(disp), a.to(disp)).argmax(1).cpu())
         ys.append(y)
     y, p = torch.cat(ys).numpy(), torch.cat(ps).numpy()
     return {
@@ -70,10 +70,17 @@ def latencia_cpu_ms(modelo, ds, n: int = 200, hilos: int = 4):
     return {"mediana_ms": float(np.median(t)), "p95_ms": float(np.percentile(t, 95))}
 
 
-def entrenar_una(cfg, ds, info, semilla: int, salida: Path):
+def elegir_dispositivo(pedido: str = "auto") -> str:
+    """GPU (CUDA) solo para ENTRENAR. La latencia siempre se mide en CPU, como en la Raspberry."""
+    if pedido == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return pedido
+
+
+def entrenar_una(cfg, ds, info, semilla: int, salida: Path, disp: str = "cpu"):
     fijar_semilla(semilla)
     m = cfg["modelo"]
-    modelo = ClasificadorFallas(m["tipo"], info["forma_vib"], info["forma_aux"], len(info["clases"]), **m.get("params", {}))
+    modelo = ClasificadorFallas(m["tipo"], info["forma_vib"], info["forma_aux"], len(info["clases"]), **m.get("params", {})).to(disp)
     e = cfg["entrenamiento"]
     g = torch.Generator().manual_seed(semilla)
     dl_tr = DataLoader(ds["train"], batch_size=e["batch"], shuffle=True, generator=g)
@@ -89,13 +96,14 @@ def entrenar_una(cfg, ds, info, semilla: int, salida: Path):
         modelo.train()
         tot = 0.0
         for v, a, y in dl_tr:
+            v, a, y = v.to(disp), a.to(disp), y.to(disp)
             opt.zero_grad()
             l = perdida(modelo(v, a), y)
             l.backward()
             opt.step()
             tot += l.item() * len(y)
         sched.step()
-        val = evaluar(modelo, dl_va)
+        val = evaluar(modelo, dl_va, disp)
         historia.append({"epoca": ep, "loss": tot / len(ds["train"]), "val_f1": val["f1_macro"]})
         print(f"  [{m['tipo']} s{semilla}] ep {ep:02d} loss {historia[-1]['loss']:.4f} val_f1 {val['f1_macro']:.4f}")
         if val["f1_macro"] > mejor:
@@ -107,6 +115,7 @@ def entrenar_una(cfg, ds, info, semilla: int, salida: Path):
                 print("  parada temprana")
                 break
     modelo.load_state_dict(mejor_estado)
+    modelo = modelo.cpu()  # evaluación final y latencia en CPU (como en el borde)
 
     test = evaluar(modelo, dl_te)
     metr = {
@@ -119,10 +128,11 @@ def entrenar_una(cfg, ds, info, semilla: int, salida: Path):
         "test": test,
         "latencia_cpu_local": latencia_cpu_ms(modelo, ds["test"]),
         "tiempo_entrenamiento_s": time.time() - t0,
+        "dispositivo_entrenamiento": disp,
         "historia": historia,
     }
     salida.mkdir(parents=True, exist_ok=True)
-    torch.save(modelo.state_dict(), salida / "model.pt")
+    torch.save(modelo.state_dict(), salida / "model.pt")  # ya en CPU
     (salida / "metrics.json").write_text(json.dumps(metr, indent=2, ensure_ascii=False))
     (salida / "config.yaml").write_text(yaml.safe_dump(cfg, allow_unicode=True))
     (salida / "data_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False))
@@ -130,19 +140,30 @@ def entrenar_una(cfg, ds, info, semilla: int, salida: Path):
 
 
 def registrar_mlflow(cfg, metr, salida: Path):
+    import os
+
+    # Windows con "Control inteligente de aplicaciones" bloquea las extensiones compiladas de SQLAlchemy
+    # (_collections_cy). Esta variable hace que SQLAlchemy use su versión en Python puro.
+    os.environ.setdefault("DISABLE_SQLALCHEMY_CEXT_RUNTIME", "1")
     try:
         import mlflow
-    except ImportError:
-        print("  (MLflow no instalado: se omite el registro)")
+    except Exception as e:
+        print(f"  (MLflow no disponible: se omite el registro) {e}")
         return
     try:
-        _registrar(mlflow, cfg, metr, salida)
-    except Exception as e:  # el registro nunca debe tumbar el entrenamiento
-        print(f"  (MLflow falló, la corrida igual quedó guardada en {salida}): {e}")
+        _registrar(mlflow, cfg, metr, salida, "sqlite:///" + (RAIZ / "mlflow.db").as_posix())
+    except Exception as e1:
+        # Respaldo: almacén en carpeta (no usa SQLAlchemy)
+        os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+        try:
+            _registrar(mlflow, cfg, metr, salida, (RAIZ / "mlruns").as_uri())
+            print("  (MLflow: se usó el almacén en carpeta mlruns/ porque SQLite falló)")
+        except Exception as e2:  # el registro nunca debe tumbar el entrenamiento
+            print(f"  (MLflow falló, la corrida igual quedó guardada en {salida}): {e1} | {e2}")
 
 
-def _registrar(mlflow, cfg, metr, salida: Path):
-    mlflow.set_tracking_uri("sqlite:///" + (RAIZ / "mlflow.db").as_posix())
+def _registrar(mlflow, cfg, metr, salida: Path, uri: str):
+    mlflow.set_tracking_uri(uri)
     mlflow.set_experiment("lstm_vs_transformer")
     with mlflow.start_run(run_name=f"{cfg['nombre']}_s{metr['semilla']}"):
         mlflow.log_params({"modelo": metr["modelo"], "semilla": metr["semilla"], "fuente": cfg["datos"]["fuente"],
@@ -156,7 +177,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--seeds", type=int, nargs="+", default=[0])
+    ap.add_argument("--device", default="auto", help="auto | cpu | cuda")
     args = ap.parse_args()
+    disp = elegir_dispositivo(args.device)
+    print(f"Entrenando en: {disp}" + (f" ({torch.cuda.get_device_name(0)})" if disp == "cuda" else
+          "  (sin GPU CUDA disponible para PyTorch)"))
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
 
     # El split de datos usa una semilla FIJA: todos los modelos se comparan sobre las mismas grabaciones.
@@ -165,7 +190,7 @@ def main():
 
     for s in args.seeds:
         salida = RAIZ / "runs" / cfg["nombre"] / f"seed{s}"
-        metr = entrenar_una(cfg, ds, info, s, salida)
+        metr = entrenar_una(cfg, ds, info, s, salida, disp)
         print(f"==> {cfg['nombre']} s{s}: acc {metr['test']['accuracy']:.4f} | f1 {metr['test']['f1_macro']:.4f} | "
               f"{metr['parametros']} params | {metr['latencia_cpu_local']['mediana_ms']:.2f} ms (CPU local)")
         if cfg.get("mlflow", False):

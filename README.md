@@ -68,5 +68,6 @@ src/       simulate, data, models, train, export, summarize
 edge/      benchmark para la Raspberry Pi
 data/      datos reales (NO se suben a git)
 results/   tablas y figuras para la tesis
+bitacora/  registro por sesión (comandos, resultados, decisiones)
 runs/      corridas (ignorado en git)
 ```

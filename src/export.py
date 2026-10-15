@@ -21,6 +21,7 @@ import onnxruntime as ort
 import torch
 import yaml
 from onnxruntime.quantization import QuantType, quantize_dynamic
+from onnxruntime.quantization.shape_inference import quant_pre_process
 from sklearn.metrics import accuracy_score, f1_score
 
 from data import preparar
@@ -72,8 +73,16 @@ def main():
         modelo, (te.vib[:1], te.aux[:1]), str(fp32),
         input_names=["vib", "aux"], output_names=["logits"], opset_version=17, dynamo=False,
     )
+    # Pre-procesamiento recomendado por onnxruntime antes de cuantizar (fusiona y simplifica el grafo)
+    prep = run / "model_fp32_prep.onnx"
+    try:
+        quant_pre_process(str(fp32), str(prep), skip_symbolic_shape=True)
+        origen = prep
+    except Exception as e:
+        print(f"(pre-procesamiento omitido: {e})")
+        origen = fp32
     int8 = run / "model_int8.onnx"
-    quantize_dynamic(str(fp32), str(int8), weight_type=QuantType.QInt8)
+    quantize_dynamic(str(origen), str(int8), weight_type=QuantType.QInt8)
 
     res = {"fp32": evaluar_onnx(fp32, vib, aux, y), "int8": evaluar_onnx(int8, vib, aux, y)}
     res["caida_accuracy_int8"] = res["fp32"]["accuracy"] - res["int8"]["accuracy"]
